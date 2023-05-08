@@ -1,0 +1,155 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Block represents a block in the blockchain
+type Block struct {
+	Index        int           `json:"index"`
+	Transactions []Transaction `json:"transactions"`
+	Timestamp    int64         `json:"timestamp"`
+	Hash         string        `json:"hash"`
+	PrevHash     string        `json:"previous_hash"`
+	Nonce        int           `json:"nonce"`
+}
+
+// Transaction represents a transaction in the blockchain
+type Transaction struct {
+	Author    string `json:"author"`
+	Content   string `json:"content"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// Blockchain represents the blockchain
+type Blockchain struct {
+	chain                   []Block
+	unconfirmedTransactions []Transaction
+	difficulty              int
+	mutex                   sync.Mutex
+}
+
+// NewBlock creates a new block
+func NewBlock(index int, transactions []Transaction, timestamp int64, prevHash string, nonce int) Block {
+	return Block{
+		Index:        index,
+		Transactions: transactions,
+		Timestamp:    timestamp,
+		PrevHash:     prevHash,
+		Nonce:        nonce,
+	}
+}
+
+// ComputeHash computes the hash of the block
+func (b *Block) ComputeHash() string {
+	blockBytes, _ := json.Marshal(b)
+	return fmt.Sprintf("%x", sha256.Sum256(blockBytes))
+}
+
+// NewBlockchain creates a new blockchain
+func NewBlockchain() *Blockchain {
+	bc := &Blockchain{
+		difficulty:              2,
+		unconfirmedTransactions: []Transaction{},
+	}
+	bc.CreateGenesisBlock()
+	return bc
+}
+
+// CreateGenesisBlock creates the genesis block
+func (bc *Blockchain) CreateGenesisBlock() {
+	block := NewBlock(0, []Transaction{}, time.Now().Unix(), "0", 0)
+	block.Hash = block.ComputeHash()
+	bc.chain = append(bc.chain, block)
+}
+
+// LastBlock returns the last block in the chain
+func (bc *Blockchain) LastBlock() Block {
+	return bc.chain[len(bc.chain)-1]
+}
+
+// AddBlock adds a block to the chain
+func (bc *Blockchain) AddBlock(block Block, proof string) error {
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	if block.PrevHash != bc.LastBlock().Hash {
+		return errors.New("Previous hash is incorrect")
+	}
+
+	if !bc.IsValidProof(block, proof) {
+		return errors.New("Block proof is invalid")
+	}
+
+	block.Hash = proof
+	bc.chain = append(bc.chain, block)
+	return nil
+}
+
+// IsValidProof checks if the proof is valid
+func (bc *Blockchain) IsValidProof(block Block, blockHash string) bool {
+	return blockHash[:bc.difficulty] == "00" // difficulty is hardcoded to 2
+}
+
+// ProofOfWork performs proof of work
+func (bc *Blockchain) ProofOfWork(block Block) string {
+	block.Nonce = 0
+	for {
+		hash := block.ComputeHash()
+		if bc.IsValidProof(block, hash) {
+			return hash
+		}
+		block.Nonce++
+	}
+}
+
+// AddTransaction adds a transaction to the unconfirmed transactions list
+func (bc *Blockchain) AddTransaction(tx Transaction) {
+	bc.unconfirmedTransactions = append(bc.unconfirmedTransactions, tx)
+}
+
+// Mine mines a new block
+func (bc *Blockchain) Mine() error {
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
+
+	if len(bc.unconfirmedTransactions) == 0 {
+		return errors.New("No transactions to mine")
+	}
+
+	lastBlock := bc.LastBlock()
+	newBlock := NewBlock(lastBlock.Index+1, bc.unconfirmedTransactions, time.Now().Unix(), lastBlock.Hash, 0)
+	proof := bc.ProofOfWork(newBlock)
+	err := bc.AddBlock(newBlock, proof)
+	if err != nil {
+		return err
+	}
+
+	bc.unconfirmedTransactions = []Transaction{}
+	return nil
+}
+
+// GetChain returns the blockchain
+func (bc *Blockchain) GetChain() []Block {
+	return bc.chain
+}
+
+// GetUnconfirmedTransactions returns the unconfirmed transactions
+func (bc *Blockchain) GetUnconfirmedTransactions() []Transaction {
+	return bc.unconfirmedTransactions
+}
+
+// IsValidChain checks if the chain is valid
+func IsValidChain(chain []Block) bool {
+	prevHash := "0"
+	for _, block := range chain {
+		if block.PrevHash !=

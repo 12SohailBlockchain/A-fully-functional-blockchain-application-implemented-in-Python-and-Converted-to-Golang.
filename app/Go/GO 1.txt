@@ -1,0 +1,215 @@
+//Python to Golang converted.
+// python_blockchain_app/app/views.py /
+
+
+
+
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "sort"
+    "strconv"
+    "strings"
+    "time"
+
+    "github.com/gorilla/mux"
+)
+
+type Transaction struct {
+    Author  string `json:"author"`
+    Content string `json:"content"`
+    Index   int    `json:"index"`
+    Hash    string `json:"hash"`
+    Time    int64  `json:"timestamp"`
+}
+
+type Block struct {
+    Index        int           `json:"index"`
+    Timestamp    int64         `json:"timestamp"`
+    Transactions []Transaction `json:"transactions"`
+    Hash         string        `json:"hash"`
+    PrevHash     string        `json:"previous_hash"`
+}
+
+type Blockchain struct {
+    Chain               []Block `json:"chain"`
+    PendingTransactions []Transaction
+}
+
+var blockchain Blockchain
+
+var connectedNodeAddress string
+
+func main() {
+    router := mux.NewRouter()
+    router.HandleFunc("/", handleGet).Methods("GET")
+    router.HandleFunc("/submit", handleSubmit).Methods("POST")
+    router.HandleFunc("/chain", handleChain).Methods("GET")
+    router.HandleFunc("/new_transaction", handleNewTransaction).Methods("POST")
+    router.HandleFunc("/mine", handleMine).Methods("GET")
+    router.HandleFunc("/pending_transactions", handlePendingTransactions).Methods("GET")
+
+    connectedNodeAddress = "http://127.0.0.1:8000"
+
+    log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+func handleGet(w http.ResponseWriter, r *http.Request) {
+    fetchPosts()
+    renderTemplate(w, "index.html", map[string]interface{}{
+        "title":          "YourNet: Decentralized content sharing",
+        "posts":          blockchainToPosts(),
+        "node_address":   connectedNodeAddress,
+        "readable_time":  timestampToString,
+        "pending_count":  len(blockchain.PendingTransactions),
+        "chain_length":   len(blockchain.Chain),
+        "last_block":     blockchain.Chain[len(blockchain.Chain)-1],
+        "difficulty":     4,
+        "reward":         100,
+        "mining_enabled": true,
+    })
+}
+
+func handleSubmit(w http.ResponseWriter, r *http.Request) {
+    r.ParseForm()
+    author := r.Form.Get("author")
+    content := r.Form.Get("content")
+
+    newTransaction := Transaction{
+        Author:  author,
+        Content: content,
+        Time:    time.Now().Unix(),
+    }
+
+    blockchain.PendingTransactions = append(blockchain.PendingTransactions, newTransaction)
+
+    http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func handleChain(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(blockchain)
+}
+
+func handleNewTransaction(w http.ResponseWriter, r *http.Request) {
+    var transaction Transaction
+    decoder := json.NewDecoder(r.Body)
+    err := decoder.Decode(&transaction)
+    if err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
+
+    blockchain.PendingTransactions = append(blockchain.PendingTransactions, transaction)
+
+    w.WriteHeader(http.StatusCreated)
+}
+
+func handleMine(w http.ResponseWriter, r *http.Request) {
+    lastBlock := blockchain.Chain[len(blockchain.Chain)-1]
+    lastProof := lastBlock.Transactions[len(lastBlock.Transactions)-1].Hash
+    proof := proofOfWork(lastProof)
+
+    rewardTransaction := Transaction{
+        Author:  "YourNet",
+        Content: "Mined block reward",
+        Time:    time.Now().Unix(),
+    }
+
+    newBlock := Block{
+        Index:        len(blockchain.Chain),
+        Timestamp:    time.Now().Unix(),
+        Transactions: append(blockchain.PendingTransactions, rewardTransaction),
+        Hash:         calculateHash(lastBlock.Hash, proof),
+        PrevHash:     lastBlock.Hash,
+    }
+
+    blockchain.PendingTransactions = []Transaction{}
+    blockchain.Chain = append(blockchain.Chain, newBlock)
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(newBlock)
+}
+
+func handlePendingTransactions(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(blockchain.PendingTransactions)
+}
+
+func fetchPosts() {
+    getChainAddress := fmt.Sprintf("%s/chain", connectedNodeAddress)
+    response, err := http.Get(getChainAddress)
+    if err != nil {
+        log.Println(err)
+        return
+    }
+    defer response.Body.Close()
+
+    var chain Blockchain
+    err = json.NewDecoder(response.Body).Decode(&chain)
+    if err != nil {
+        log.Println(err)
+        return
+    }
+
+    var content []Transaction
+    for _, block := range chain.Chain {
+        for _, tx := range block.Transactions {
+            tx.Index = block.Index
+            tx.Hash = block.PrevHash
+            content = append(content, tx)
+        }
+    }
+
+    blockchain = chain
+    blockchain.PendingTransactions = content
+}
+
+func blockchainToPosts() []Transaction {
+    posts := make([]Transaction, len(blockchain.PendingTransactions))
+    copy(posts, blockchain.PendingTransactions)
+    sort.Slice(posts, func(i, j int) bool {
+        return posts[i].Time > posts[j].Time
+    })
+    return posts
+}
+
+func timestampToString(epochTime int64) string {
+    return time.Unix(epochTime, 0).Format("15:04")
+}
+
+func calculateHash(prevHash string, proof int) string {
+    data := fmt.Sprintf("%s%d", prevHash, proof)
+    return fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+}
+
+func proofOfWork(lastProof string) int {
+    proof := 0
+    for !validProof(lastProof, proof) {
+        proof++
+    }
+    return proof
+}
+
+func validProof(lastProof string, proof int) bool {
+    guess := fmt.Sprintf("%s%d", lastProof, proof)
+    guessHash := fmt.Sprintf("%x", sha256.Sum256([]byte(guess)))
+    return guessHash[:4] == "0000"
+}
+
+func renderTemplate(w http.ResponseWriter, tmpl string, data map[string]interface{}) {
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    templates.ExecuteTemplate(w, tmpl, data)
+}
+
+var templates = parseTemplates()
+
+func parseTemplates() *template.Template {
+    result := template.New("templates")
+    template.Must(result.ParseGlob("templates/*.html"))
+    return result
+}
